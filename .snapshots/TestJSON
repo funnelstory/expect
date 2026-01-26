@@ -1,0 +1,15 @@
+{
+ "active": true,
+ "age": 30,
+ "email": "john@example.com",
+ "metadata": {
+  "created_at": "2024-01-01T00:00:00Z",
+  "updated_at": "2024-01-15T12:00:00Z"
+ },
+ "name": "John Doe",
+ "tags": [
+  "developer",
+  "golang",
+  "testing"
+ ]
+}

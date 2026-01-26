@@ -1,0 +1,22 @@
+[
+ {
+  "arguments": [
+   "Alice",
+   30
+  ],
+  "method": "CreateUser"
+ },
+ {
+  "arguments": [
+   "Bob",
+   25
+  ],
+  "method": "CreateUser"
+ },
+ {
+  "arguments": [
+   "user-999"
+  ],
+  "method": "DeleteUser"
+ }
+]

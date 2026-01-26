@@ -1,0 +1,23 @@
+HTTP/1.1 200 OK
+Connection: close
+Cache-Control: no-cache
+Connection: keep-alive
+Content-Type: text/event-stream
+
+event: start
+data: {"status":"started","timestamp":"2024-01-01T00:00:00Z"}
+
+event: progress
+data: {"status":"processing","step":1,"total":3}
+
+event: progress
+data: {"status":"processing","step":2,"total":3}
+
+event: progress
+data: {"status":"processing","step":3,"total":3}
+
+event: complete
+data: {"status":"completed","result":"success"}
+id: evt-12345
+
+

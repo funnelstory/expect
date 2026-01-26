@@ -1,0 +1,14 @@
+HTTP/1.1 200 OK
+Connection: close
+Content-Type: text/event-stream
+
+: This is a comment
+data: {"message":"First event"}
+
+: Another comment line
+event: error
+data: {"error":"Something went wrong","code":"ERR_001"}
+
+data: {"message":"Recovery attempt"}
+
+

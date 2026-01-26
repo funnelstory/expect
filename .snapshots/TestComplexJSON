@@ -1,0 +1,29 @@
+{
+ "organization": {
+  "id": "org_67890",
+  "name": "Acme Corp",
+  "plan": "enterprise"
+ },
+ "settings": {
+  "notifications": {
+   "email": true,
+   "slack": false,
+   "sms": true
+  },
+  "preferences": {
+   "language": "en",
+   "theme": "dark",
+   "timezone": "America/Los_Angeles"
+  }
+ },
+ "user": {
+  "email": "alice@example.com",
+  "id": "usr_12345",
+  "name": "Alice Smith",
+  "roles": [
+   "admin",
+   "developer"
+  ],
+  "verified": true
+ }
+}
