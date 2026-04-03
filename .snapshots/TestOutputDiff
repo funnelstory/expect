@@ -1,0 +1,11 @@
+--- Previous
++++ Current
+@@ -1,5 +1,5 @@
+ line 1
+-line 2
++line 2 modified
+ line 3
+-line 4
++line 4 changed
+ line 5
+
