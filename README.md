@@ -23,7 +23,7 @@ However, because snapshots catch _any_ diff, you need to control sources of nond
 - **Snapshot Testing**: Automatically create and compare test output snapshots
 - **HTTP Testing**: Helpers for testing HTTP requests and responses
 - **SSE Stream Testing**: Parse and test Server-Sent Events streams with structured data
-- **SQL Formatting**: Format SQL with pgFormatter in Docker, then snapshot
+- **SQL Formatting**: Format SQL with `pgformat.Format` (pgFormatter-style), then snapshot
 - **Mock Testing**: Snapshot mock call history
 - **Log Testing**: Snapshot structured log output
 
@@ -172,9 +172,9 @@ SSE comments (lines starting with `:`) are automatically filtered out during par
 
 ### SQL Query Snapshots
 
-Format and snapshot SQL queries. Formatting runs [pgFormatter](https://github.com/darold/pgFormatter) inside Docker (`ghcr.io/funnelstory/pgformatter`). Snapshots are saved as `.sql` files under `.snapshots/`.
+Format and snapshot SQL queries. `expect.SQL` uses `pgformat.Format`, a Go lexer and layout pass that targets [pgFormatter](https://github.com/darold/pgFormatter) output so snapshots stay stable without Docker or Perl. Snapshots are saved as `.sql` files under `.snapshots/`.
 
-If Docker is unavailable or the container exits with an error, the unformatted SQL is snapshot instead. This is useful for first-time snapshot creation on machines without Docker, but subsequent runs will fail if the committed snapshot was formatted.
+In `pgformat`, `TestFormatMatchesDockerPgFormatter` optionally compares `Format` to the FunnelStory pgFormatter container (same image as CI). It runs when Docker can pull and run that image; otherwise the subtests skip.
 
 ```go
 func TestSQLQuery(t *testing.T) {
@@ -188,8 +188,6 @@ func TestSQLQuery(t *testing.T) {
     expect.SQL(t, query)
 }
 ```
-
-Requires a working `docker` CLI on the machine running tests when you want formatted snapshots. CI images should include Docker if you rely on formatting there.
 
 ### Mock Call History
 
@@ -335,8 +333,6 @@ Go modules:
 - [testify](https://github.com/stretchr/testify) for assertions and mocks
 - [zap](https://github.com/uber-go/zap) for log testing utilities
 
-SQL formatting (`expect.SQL`) additionally expects [Docker](https://docs.docker.com/get-docker/) with access to `ghcr.io/funnelstory/pgformatter` at test time if you want pretty-printed SQL in snapshots.
-
 ## Handling Nondeterminism
 
 Snapshot testing forces you to remove sources of randomness. Here are common sources and how to handle them:
@@ -362,4 +358,10 @@ Snapshot testing forces you to remove sources of randomness. Here are common sou
 
 ## License
 
-MIT License - See LICENSE file for details
+The top-level package is MIT licensed (see `LICENSE`).
+
+The `pgformat/` subpackage is distributed under the Artistic License 2.0
+(see `pgformat/LICENSE` and `pgformat/COPYRIGHT`). It uses keyword and
+built-in function lists modelled on
+[darold/pgFormatter](https://github.com/darold/pgFormatter) (PostgreSQL
+License, Copyright 2012–2026 Gilles Darold).

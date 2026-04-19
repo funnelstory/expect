@@ -1,0 +1,11 @@
+The `pgformat` package targets output similar to darold/pgFormatter
+(https://github.com/darold/pgFormatter) for stable snapshots without Perl.
+
+pgFormatter is Copyright 2012–2026 Gilles Darold, PostgreSQL License
+(https://github.com/darold/pgFormatter). The keyword and built-in function
+lists in `keywords.go` and `funcs.go` are modelled on pgFormatter; no
+pgFormatter source code is copied. The layout engine is an independent Go
+implementation.
+
+This directory is licensed under the Artistic License 2.0 (`LICENSE` here).
+The rest of the `expect` repository is MIT licensed (top-level `LICENSE`).
