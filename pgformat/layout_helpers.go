@@ -171,9 +171,17 @@ func snapPeek(toks []snapToken, i int, s string) bool {
 // as `start`. Scanning stops (returns -1) if the depth drops below that starting
 // depth—so a subquery cannot pick up FROM / SET / etc. from an outer statement.
 func findSnapAtDepth0(toks []snapToken, start int, want string) int {
+	return findSnapAtDepth0Limit(toks, start, want, len(toks))
+}
+
+// findSnapAtDepth0Limit is like findSnapAtDepth0 but stops scanning before limitEx (exclusive).
+func findSnapAtDepth0Limit(toks []snapToken, start int, want string, limitEx int) int {
+	if limitEx > len(toks) {
+		limitEx = len(toks)
+	}
 	d := snapParenDepthBefore(toks, start)
 	target := d
-	for i := start; i < len(toks); i++ {
+	for i := start; i < limitEx; i++ {
 		switch toks[i].kind {
 		case snapTokLParen:
 			d++
@@ -236,9 +244,16 @@ func snapParenDepthBefore(toks []snapToken, i int) int {
 // that starts at i: either a closing paren that pops below the depth at i, or
 // a top-level clause keyword (WHERE, GROUP, …) at the same nesting depth.
 func nextSnapClauseBoundary(toks []snapToken, i int) int {
+	return nextSnapClauseBoundaryLimit(toks, i, len(toks))
+}
+
+func nextSnapClauseBoundaryLimit(toks []snapToken, i int, limitEx int) int {
+	if limitEx > len(toks) {
+		limitEx = len(toks)
+	}
 	startDepth := snapParenDepthBefore(toks, i)
 	d := startDepth
-	for j := i; j < len(toks); j++ {
+	for j := i; j < limitEx; j++ {
 		switch toks[j].kind {
 		case snapTokLParen:
 			d++
@@ -263,7 +278,7 @@ func nextSnapClauseBoundary(toks []snapToken, i int) int {
 			return j
 		}
 	}
-	return len(toks)
+	return limitEx
 }
 
 func isSnapClauseStart(toks []snapToken, i int) bool {
@@ -288,9 +303,16 @@ func isWithBodyStmtStart(toks []snapToken, i int) bool {
 }
 
 func selectListEndWithoutFrom(toks []snapToken, i int) int {
+	return selectListEndWithoutFromLimit(toks, i, len(toks))
+}
+
+func selectListEndWithoutFromLimit(toks []snapToken, i int, limitEx int) int {
+	if limitEx > len(toks) {
+		limitEx = len(toks)
+	}
 	startDepth := snapParenDepthBefore(toks, i)
 	d := startDepth
-	for j := i; j < len(toks); j++ {
+	for j := i; j < limitEx; j++ {
 		switch toks[j].kind {
 		case snapTokLParen:
 			d++
@@ -312,7 +334,7 @@ func selectListEndWithoutFrom(toks []snapToken, i int) int {
 			return j
 		}
 	}
-	return len(toks)
+	return limitEx
 }
 
 func caseExpressionEnd(toks []snapToken, caseFrom, limit int) int {

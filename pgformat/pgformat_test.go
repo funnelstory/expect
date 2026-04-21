@@ -5,6 +5,19 @@ import (
 	"testing"
 )
 
+func sqlMaterializedDoubleParenCTE() string {
+	return `WITH m AS MATERIALIZED ((SELECT 1)) SELECT 1`
+}
+
+func sqlSelectListBoundedSubquery() string {
+	return `WITH r AS (SELECT 1 AS c0, 2 AS c1)
+SELECT
+    r.c0,
+    (SELECT COUNT(*) FROM r u WHERE u.c0 = r.c0) AS cnt,
+    COALESCE((SELECT c1 FROM r u2 WHERE u2.c0 = r.c0 LIMIT 1), 0) AS val
+FROM r`
+}
+
 func TestFormat(t *testing.T) {
 	t.Run("matches pgFormatter style for update", func(t *testing.T) {
 		out := Format("UPDATE users SET name = 'Jane Doe', updated_at = NOW() WHERE id = 123")
@@ -40,6 +53,32 @@ func TestTokenize(t *testing.T) {
 	}
 	if b.String() != "SELECT1+1" {
 		t.Fatalf("concat tokens: got %q", b.String())
+	}
+}
+
+func TestFormatWithMaterializedDoubleParen(t *testing.T) {
+	q := sqlMaterializedDoubleParenCTE()
+	out := Format(q)
+	if out == strings.TrimSpace(q) {
+		t.Fatalf("expected reformat, got unchanged:\n%s", out)
+	}
+	if !strings.Contains(out, "MATERIALIZED (\n") {
+		t.Fatalf("expected newline after MATERIALIZED (:\n%s", out)
+	}
+}
+
+// A parenthesized scalar subquery in the SELECT list must not let layout scan
+// past its closing ")" into the next column (would glue "AS" and the alias).
+func TestFormatSelectListBoundedSubquery(t *testing.T) {
+	sql := sqlSelectListBoundedSubquery()
+	out := Format(sql)
+	for _, bad := range []string{"AScnt", "ASval"} {
+		if strings.Contains(out, bad) {
+			t.Fatalf("missing space before alias (pattern %q):\n%s", bad, out)
+		}
+	}
+	if !sameTokenStream(sql, out, DefaultOptions()) {
+		t.Fatalf("token stream mismatch:\n%s", out)
 	}
 }
 

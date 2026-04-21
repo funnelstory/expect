@@ -103,6 +103,9 @@ type snapPrinter struct {
 	// cteSubqueryHadNestedWith: emitCTEClause sets true when AS (…) begins with WITH;
 	// formatWith uses it to indent the trailing SELECT after a nested-CTE subquery.
 	cteSubqueryHadNestedWith bool
+	// cteSubqueryHadWrappedQuery: emitCTEClause sets true for AS ((SELECT ...))
+	// style bodies so formatWith can keep the trailing SELECT aligned with WITH.
+	cteSubqueryHadWrappedQuery bool
 }
 
 func (p *snapPrinter) formatStatements(i int) int {
@@ -136,7 +139,7 @@ func (p *snapPrinter) formatStatements(i int) int {
 			continue
 		}
 		if snapKw(p.toks, i, "SELECT") {
-			i = p.formatSelect(i, 0)
+			i = p.formatSelect(i, 0, len(p.toks))
 			continue
 		}
 		i = p.emitRawUntil(i, len(p.toks))
@@ -163,11 +166,16 @@ func (p *snapPrinter) formatWith(i int, base int) int {
 	}
 	firstCTE := true
 	bumpTrailingSelect := false
+	alignTrailingSelectWithWith := false
 	for i < len(p.toks) && !isWithBodyStmtStart(p.toks, i) {
 		p.cteSubqueryHadNestedWith = false
+		p.cteSubqueryHadWrappedQuery = false
 		i = p.emitCTEClause(i, base, !firstCTE)
 		if p.cteSubqueryHadNestedWith {
 			bumpTrailingSelect = true
+		}
+		if p.cteSubqueryHadWrappedQuery {
+			alignTrailingSelectWithWith = true
 		}
 		firstCTE = false
 	}
@@ -176,7 +184,7 @@ func (p *snapPrinter) formatWith(i int, base int) int {
 	}
 	p.b.WriteByte('\n')
 	selectBase := base
-	if base > 0 {
+	if base > 0 && !alignTrailingSelectWithWith {
 		selectBase = base + 1
 	}
 	if base == 0 && bumpTrailingSelect {
@@ -184,7 +192,7 @@ func (p *snapPrinter) formatWith(i int, base int) int {
 	}
 	switch {
 	case snapKw(p.toks, i, "SELECT"):
-		return p.formatSelect(i, selectBase)
+		return p.formatSelect(i, selectBase, len(p.toks))
 	case snapKw(p.toks, i, "INSERT"):
 		return p.formatInsert(i, selectBase)
 	case snapKw(p.toks, i, "UPDATE"):
@@ -194,6 +202,43 @@ func (p *snapPrinter) formatWith(i int, base int) int {
 	default:
 		return i
 	}
+}
+
+// formatWithBound formats a WITH statement that must end before boundExcl, such
+// as a derived table body inside "( ... )". Today these bounded contexts only
+// need a SELECT body; anything else is emitted raw to preserve tokens.
+func (p *snapPrinter) formatWithBound(i int, base int, boundExcl int) int {
+	p.emitIndent(base)
+	p.writeTok(i)
+	i++
+	if i < boundExcl && snapKw(p.toks, i, "RECURSIVE") {
+		p.b.WriteByte(' ')
+		p.writeTok(i)
+		i++
+	}
+	firstCTE := true
+	bumpTrailingSelect := false
+	for i < boundExcl && !isWithBodyStmtStart(p.toks, i) {
+		p.cteSubqueryHadNestedWith = false
+		p.cteSubqueryHadWrappedQuery = false
+		i = p.emitCTEClause(i, base, !firstCTE)
+		if p.cteSubqueryHadNestedWith {
+			bumpTrailingSelect = true
+		}
+		firstCTE = false
+	}
+	if i >= boundExcl || !isWithBodyStmtStart(p.toks, i) {
+		return i
+	}
+	p.b.WriteByte('\n')
+	selectBase := base
+	if base == 0 && bumpTrailingSelect {
+		selectBase = 1
+	}
+	if snapKw(p.toks, i, "SELECT") {
+		return p.formatSelect(i, selectBase, boundExcl)
+	}
+	return p.emitRawUntil(i, boundExcl)
 }
 
 func (p *snapPrinter) emitCTEClause(i int, base int, afterComma bool) int {
@@ -243,10 +288,26 @@ func (p *snapPrinter) emitCTEClause(i int, base int, afterComma bool) int {
 		p.writeTok(i)
 		i++
 	}
+	// PostgreSQL: AS [ NOT ] MATERIALIZED ( query )
+	if i < len(p.toks) && snapKw(p.toks, i, "NOT") && i+1 < len(p.toks) && snapKw(p.toks, i+1, "MATERIALIZED") {
+		p.b.WriteByte(' ')
+		p.writeTok(i)
+		p.b.WriteByte(' ')
+		p.writeTok(i + 1)
+		i += 2
+	} else if i < len(p.toks) && snapKw(p.toks, i, "MATERIALIZED") {
+		p.b.WriteByte(' ')
+		p.writeTok(i)
+		i++
+	}
 	if i < len(p.toks) && p.toks[i].kind == snapTokLParen {
 		p.b.WriteByte(' ')
 		p.writeTok(i)
 		i++
+		wrappedSubquery := i < len(p.toks) && p.toks[i].kind == snapTokLParen
+		if wrappedSubquery {
+			p.cteSubqueryHadWrappedQuery = true
+		}
 		subqHadWith := i < len(p.toks) && snapKw(p.toks, i, "WITH")
 		i = p.formatSubqueryInParen(i, base+1)
 		if subqHadWith {
@@ -267,6 +328,9 @@ func (p *snapPrinter) emitCTEClause(i int, base int, afterComma bool) int {
 				}
 			} else {
 				p.b.WriteByte('\n')
+				if wrappedSubquery || subqHadWith {
+					p.emitIndent(base)
+				}
 			}
 			p.writeTok(i)
 			i++
@@ -306,7 +370,71 @@ func (p *snapPrinter) formatSubqueryInParen(i int, innerBase int) int {
 	}
 	if i < len(p.toks) && snapKw(p.toks, i, "SELECT") {
 		p.b.WriteByte('\n')
-		return p.formatSelect(i, innerBase)
+		if i > 0 && p.toks[i-1].kind == snapTokLParen {
+			close := findMatchingRParenBetween(p.toks, i-1, len(p.toks))
+			if close >= 0 {
+				return p.formatSelect(i, innerBase, close)
+			}
+		}
+		return p.formatSelect(i, innerBase, len(p.toks))
+	}
+	// AS (( SELECT … )) and similar: extra '(' before the subquery head.
+	wrap := 0
+	j := i
+	for j < len(p.toks) && p.toks[j].kind == snapTokLParen {
+		wrap++
+		j++
+	}
+	if wrap > 0 && j < len(p.toks) &&
+		(snapKw(p.toks, j, "SELECT") || snapKw(p.toks, j, "WITH") || snapKw(p.toks, j, "VALUES")) {
+		for k := 0; k < wrap; k++ {
+			p.b.WriteByte('\n')
+			p.emitIndent(innerBase + k)
+			p.writeTok(i + k)
+		}
+		subBase := innerBase + wrap
+		p.b.WriteByte('\n')
+		var subEnd int
+		switch {
+		case snapKw(p.toks, j, "WITH"):
+			subEnd = p.formatWith(j, subBase)
+		case snapKw(p.toks, j, "VALUES"):
+			subEnd = p.formatValuesSubquery(j, subBase)
+		default:
+			innerOpen := i + wrap - 1
+			close := findMatchingRParenBetween(p.toks, innerOpen, len(p.toks))
+			if close >= 0 {
+				subEnd = p.formatSelect(j, subBase, close)
+			} else {
+				subEnd = p.formatSelect(j, subBase, len(p.toks))
+			}
+		}
+		i = subEnd
+		for k := 0; k < wrap; k++ {
+			dedent := innerBase + wrap - 1 - k
+			if dedent < 0 {
+				dedent = 0
+			}
+			if i < len(p.toks) && p.toks[i].kind == snapTokRParen {
+				if cteClosingParenMergesWithWhereLine(p.toks, i) {
+					body := p.b.String()
+					if strings.HasSuffix(body, "\n") {
+						body = body[:len(body)-1]
+						p.b.Reset()
+						p.b.WriteString(body)
+						if len(body) > 0 && body[len(body)-1] != ' ' {
+							p.b.WriteByte(' ')
+						}
+					}
+				} else {
+					p.b.WriteByte('\n')
+					p.emitIndent(dedent)
+				}
+				p.writeTok(i)
+				i++
+			}
+		}
+		return i
 	}
 	return p.emitBalanced(i)
 }
@@ -331,7 +459,7 @@ func (p *snapPrinter) formatValuesSubquery(i int, base int) int {
 		}
 		if i < len(p.toks) && snapKw(p.toks, i, "SELECT") {
 			p.b.WriteByte('\n')
-			i = p.formatSelect(i, base)
+			i = p.formatSelect(i, base, len(p.toks))
 		} else {
 			break
 		}
@@ -339,15 +467,21 @@ func (p *snapPrinter) formatValuesSubquery(i int, base int) int {
 	return i
 }
 
-func (p *snapPrinter) formatSelect(i int, base int) int {
+// formatSelect lays out a SELECT. boundExcl is the exclusive index of the first
+// token not part of this SELECT (e.g. the closing ")" of a scalar subquery); use
+// len(p.toks) for a top-level SELECT.
+func (p *snapPrinter) formatSelect(i int, base int, boundExcl int) int {
 	p.fromHadOuterJoin = false
+	if boundExcl <= 0 || boundExcl > len(p.toks) {
+		boundExcl = len(p.toks)
+	}
 	p.emitIndent(base)
 	p.writeTok(i)
 	i++
-	endFrom := findSnapAtDepth0(p.toks, i, "FROM")
+	endFrom := findSnapAtDepth0Limit(p.toks, i, "FROM", boundExcl)
 	listEnd := endFrom
 	if listEnd < 0 {
-		listEnd = selectListEndWithoutFrom(p.toks, i)
+		listEnd = selectListEndWithoutFromLimit(p.toks, i, boundExcl)
 	}
 	listBumpOuterClauses := false
 	if i < listEnd {
@@ -368,7 +502,7 @@ func (p *snapPrinter) formatSelect(i int, base int) int {
 		p.emitIndent(clauseBase)
 		p.writeTok(i)
 		i++
-		stop := nextSnapClauseBoundary(p.toks, i)
+		stop := nextSnapClauseBoundaryLimit(p.toks, i, boundExcl)
 		if i < stop {
 			fromIndent := clauseBase
 			tableIndent := clauseBase + 1
@@ -390,13 +524,13 @@ func (p *snapPrinter) formatSelect(i int, base int) int {
 	if p.fromHadOuterJoin {
 		whereIndent = 0
 	}
-	for i < len(p.toks) {
+	for i < boundExcl {
 		if snapKw(p.toks, i, "WHERE") {
 			p.b.WriteByte('\n')
 			p.emitIndent(whereIndent)
 			p.writeTok(i)
 			i++
-			nx := nextSnapClauseBoundary(p.toks, i)
+			nx := nextSnapClauseBoundaryLimit(p.toks, i, boundExcl)
 			p.b.WriteByte('\n')
 			p.emitIndent(whereIndent + 1)
 			i = p.emitExprLines(i, nx, whereIndent+1)
@@ -409,7 +543,7 @@ func (p *snapPrinter) formatSelect(i int, base int) int {
 			p.b.WriteByte(' ')
 			p.writeTok(i + 1)
 			i += 2
-			nx := p.orderByClauseEnd(i)
+			nx := p.orderByClauseEnd(i, boundExcl)
 			p.b.WriteByte('\n')
 			p.emitIndent(clauseBase + 1)
 			i, _ = p.emitSelectList(i, nx, clauseBase+1)
@@ -422,7 +556,7 @@ func (p *snapPrinter) formatSelect(i int, base int) int {
 			p.b.WriteByte(' ')
 			p.writeTok(i + 1)
 			i += 2
-			nx := nextSnapClauseBoundary(p.toks, i)
+			nx := nextSnapClauseBoundaryLimit(p.toks, i, boundExcl)
 			p.b.WriteByte('\n')
 			p.emitIndent(clauseBase + 1)
 			if snapGroupingSetsHead(p.toks, i, nx) {
@@ -437,7 +571,7 @@ func (p *snapPrinter) formatSelect(i int, base int) int {
 			p.emitIndent(clauseBase)
 			p.writeTok(i)
 			i++
-			nx := nextSnapClauseBoundary(p.toks, i)
+			nx := nextSnapClauseBoundaryLimit(p.toks, i, boundExcl)
 			p.b.WriteByte('\n')
 			p.emitIndent(clauseBase + 1)
 			i = p.emitExprLines(i, nx, clauseBase+1)
@@ -446,40 +580,112 @@ func (p *snapPrinter) formatSelect(i int, base int) int {
 		if snapKw(p.toks, i, "LIMIT") {
 			p.b.WriteByte('\n')
 			p.emitIndent(clauseBase)
-			i = p.emitLimitOffset(i, clauseBase)
+			i = p.emitLimitOffset(i, clauseBase, boundExcl)
 			break
 		}
 		if snapKw(p.toks, i, "OFFSET") {
 			p.b.WriteByte('\n')
 			p.emitIndent(clauseBase)
-			i = p.emitLimitOffset(i, clauseBase)
+			i = p.emitLimitOffset(i, clauseBase, boundExcl)
 			break
 		}
 		break
 	}
-	for i < len(p.toks) && snapKw(p.toks, i, "UNION") {
+	for i < boundExcl && snapKw(p.toks, i, "UNION") {
 		p.b.WriteByte('\n')
 		p.emitIndent(base)
 		p.writeTok(i)
 		i++
-		if i < len(p.toks) && (snapKw(p.toks, i, "ALL") || snapKw(p.toks, i, "DISTINCT")) {
+		if i < boundExcl && (snapKw(p.toks, i, "ALL") || snapKw(p.toks, i, "DISTINCT")) {
 			p.b.WriteByte(' ')
 			p.writeTok(i)
 			i++
 		}
 		p.b.WriteByte('\n')
-		if i < len(p.toks) && snapKw(p.toks, i, "SELECT") {
-			i = p.formatSelect(i, base)
+		next := p.formatSetOpOperand(i, base, boundExcl)
+		if next == i {
+			break
 		}
+		i = next
+	}
+	i = p.emitTrailingOrderLimit(i, base, boundExcl)
+	return i
+}
+
+// emitTrailingOrderLimit handles ORDER BY / LIMIT / OFFSET clauses that apply
+// to a whole set-op expression (after a UNION/INTERSECT/EXCEPT). Returns the
+// new index.
+func (p *snapPrinter) emitTrailingOrderLimit(i, base, boundExcl int) int {
+	for i < boundExcl {
+		if snapKw(p.toks, i, "ORDER") && snapPeek(p.toks, i+1, "BY") {
+			p.b.WriteByte('\n')
+			p.emitIndent(base)
+			p.writeTok(i)
+			p.b.WriteByte(' ')
+			p.writeTok(i + 1)
+			i += 2
+			nx := p.orderByClauseEnd(i, boundExcl)
+			p.b.WriteByte('\n')
+			p.emitIndent(base + 1)
+			i, _ = p.emitSelectList(i, nx, base+1)
+			continue
+		}
+		if snapKw(p.toks, i, "LIMIT") || snapKw(p.toks, i, "OFFSET") {
+			p.b.WriteByte('\n')
+			p.emitIndent(base)
+			i = p.emitLimitOffset(i, base, boundExcl)
+			continue
+		}
+		break
+	}
+	return i
+}
+
+// formatSetOpOperand renders a single set-operation operand: a bare SELECT, a
+// WITH ... SELECT, or any of the above wrapped in parentheses (recursively).
+// Returns i unchanged if the next token isn't a recognized operand start, so
+// the caller can break out of the set-op loop.
+func (p *snapPrinter) formatSetOpOperand(i, base, boundExcl int) int {
+	if i >= boundExcl {
+		return i
+	}
+	if p.toks[i].kind == snapTokLParen {
+		close := findMatchingRParenBetween(p.toks, i, boundExcl)
+		if close < 0 || close >= boundExcl {
+			return i
+		}
+		p.emitIndent(base)
+		p.writeTok(i)
+		inner := i + 1
+		if inner < close {
+			p.b.WriteByte('\n')
+			next := p.formatSetOpOperand(inner, base+1, close)
+			if next == inner {
+				return i
+			}
+			p.b.WriteByte('\n')
+			p.emitIndent(base)
+		}
+		p.writeTok(close)
+		return close + 1
+	}
+	if snapKw(p.toks, i, "SELECT") {
+		return p.formatSelect(i, base, boundExcl)
+	}
+		if snapKw(p.toks, i, "WITH") {
+			return p.formatWithBound(i, base, boundExcl)
 	}
 	return i
 }
 
 // orderByClauseEnd returns the end index (exclusive) of ORDER BY sort keys and trailing OFFSET/FETCH.
-func (p *snapPrinter) orderByClauseEnd(start int) int {
+func (p *snapPrinter) orderByClauseEnd(start int, boundExcl int) int {
+	if boundExcl <= 0 || boundExcl > len(p.toks) {
+		boundExcl = len(p.toks)
+	}
 	startDepth := snapParenDepthBefore(p.toks, start)
 	d := startDepth
-	for j := start; j < len(p.toks); j++ {
+	for j := start; j < boundExcl; j++ {
 		switch p.toks[j].kind {
 		case snapTokLParen:
 			d++
@@ -498,19 +704,22 @@ func (p *snapPrinter) orderByClauseEnd(start int) int {
 			return j
 		}
 	}
-	return len(p.toks)
+	return boundExcl
 }
 
-func (p *snapPrinter) emitLimitOffset(i int, base int) int {
+func (p *snapPrinter) emitLimitOffset(i int, base int, boundExcl int) int {
+	if boundExcl <= 0 || boundExcl > len(p.toks) {
+		boundExcl = len(p.toks)
+	}
 	kw := i
 	i++
-	if i >= len(p.toks) {
+	if i >= boundExcl {
 		p.writeTok(kw)
 		return i
 	}
 	valStart := i
 	parDepth := 0
-	for i < len(p.toks) {
+	for i < boundExcl {
 		switch p.toks[i].kind {
 		case snapTokLParen:
 			parDepth++
@@ -542,7 +751,7 @@ func (p *snapPrinter) formatInsert(i int, base int) int {
 	if sel >= 0 && (vals < 0 || sel < vals) {
 		p.emitRange(i, sel)
 		p.b.WriteByte('\n')
-		i = p.formatSelect(sel, base)
+		i = p.formatSelect(sel, base, len(p.toks))
 		return p.formatInsertOnConflict(i, base)
 	}
 	if vals < 0 {
@@ -887,7 +1096,13 @@ func (p *snapPrinter) emitSelectItem(from, to, ind int) (hadParen bool, bumpOute
 			if snapKw(p.toks, j, "WITH") {
 				k = p.formatWith(j, ind+1)
 			} else {
-				k = p.formatSelect(j, ind+1)
+				close := findMatchingRParenBetween(p.toks, from, to)
+				if close < 0 {
+					p.emitRange(from, to)
+					bump := parenListSubqueryBumpsOuterFromClause(p.toks, from, to)
+					return true, bump
+				}
+				k = p.formatSelect(j, ind+1, close)
 			}
 			for k < to && p.toks[k].kind == snapTokRParen {
 				if p.needSpace(k-1, k) {
@@ -974,6 +1189,33 @@ func (p *snapPrinter) emitCaseExpression(from, to, ind int) {
 // keyword line when the clause uses LEFT/RIGHT/FULL (pgFormatter / docker).
 func (p *snapPrinter) emitFromJoins(i, stop, fromIndent, joinLineIndent int) int {
 	_ = fromIndent
+	if i < stop && p.toks[i].kind == snapTokLParen {
+		j := i + 1
+		if j < stop && (snapKw(p.toks, j, "SELECT") || snapKw(p.toks, j, "WITH")) {
+			close := findMatchingRParenBetween(p.toks, i, stop)
+			if close > 0 && close < stop {
+				p.writeTok(i)
+				p.b.WriteByte('\n')
+				inner := joinLineIndent + 1
+				var k int
+				if snapKw(p.toks, j, "WITH") {
+					k = p.formatWithBound(j, inner, close)
+				} else {
+					k = p.formatSelect(j, inner, close)
+				}
+				if k < stop && p.toks[k].kind == snapTokRParen {
+					p.b.WriteByte('\n')
+					p.emitIndent(joinLineIndent)
+					p.writeTok(k)
+					k++
+					if k < stop && p.needSpace(k-1, k) {
+						p.b.WriteByte(' ')
+					}
+				}
+				i = k
+			}
+		}
+	}
 	lineStart := i
 	cur := i
 	for cur < stop {
@@ -996,11 +1238,20 @@ func (p *snapPrinter) emitFromJoins(i, stop, fromIndent, joinLineIndent int) int
 					p.writeTok(cur)
 					p.b.WriteByte('\n')
 					inner := joinLineIndent + 1
+					close := findMatchingRParenBetween(p.toks, cur, stop)
 					var k int
 					if snapKw(p.toks, j, "WITH") {
-						k = p.formatWith(j, inner)
+						if close < 0 {
+							k = p.emitBalanced(cur)
+						} else {
+						k = p.formatWithBound(j, inner, close)
+						}
 					} else {
-						k = p.formatSelect(j, inner)
+						if close < 0 {
+							k = p.emitBalanced(cur)
+						} else {
+							k = p.formatSelect(j, inner, close)
+						}
 					}
 					if k < stop && p.toks[k].kind == snapTokRParen {
 						p.writeTok(k)
@@ -1081,7 +1332,12 @@ func (p *snapPrinter) emitExprSegment(from, to, ind int) {
 				if snapKw(p.toks, j+1, "WITH") {
 					k = p.formatWith(j+1, ind+1)
 				} else {
-					k = p.formatSelect(j+1, ind+1)
+					close := findMatchingRParenBetween(p.toks, j, to)
+					bound := close
+					if bound < 0 {
+						bound = to
+					}
+					k = p.formatSelect(j+1, ind+1, bound)
 				}
 				if k < to && p.toks[k].kind == snapTokRParen {
 					p.writeTok(k)
